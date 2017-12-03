@@ -42,11 +42,11 @@ static int wsIsInit=0;
 #include <string.h>
 #include <ctype.h>
 
-#include "care.h"
+#include "carehttp.h"
 
 // there's slightly different ways of setting the nonblocking
 // status of a socket between *nix platforms and win32
-static void care_socket_set_nonblocking(int sock) {
+static void carehttp_socket_set_nonblocking(int sock) {
 #ifdef WIN32
 	unsigned long nbl=1;
 	ioctlsocket(sock,FIONBIO,&nbl);
@@ -59,7 +59,7 @@ static void care_socket_set_nonblocking(int sock) {
 
 // async read errors aren't directly distinguishable from plain
 // errors so we nede to poll the system to query the error state.
-static int care_socket_wasblock(int sock) {
+static int carehttp_socket_wasblock(int sock) {
 #ifdef WIN32
 	return WSAGetLastError()==WSAEWOULDBLOCK;
 #else
@@ -68,18 +68,18 @@ static int care_socket_wasblock(int sock) {
 }
 
 // a byte buffer is used to buffer up data.
-struct care_buf {
+struct carehttp_buf {
 	int length;
 	int cap;
 	char *data;
 };
 
 // this struct contains both listening sockets (unparented) and data sockets(parented)
-struct care_connection {
-	struct care_connection *next;
+struct carehttp_connection {
+	struct carehttp_connection *next;
 	int handle;
 
-	struct care_connection *parent;
+	struct carehttp_connection *parent;
 
 	// this member indicates if a connection is visible to a user, if it is then
 	// don't deallocate it until it has been made invisible.
@@ -96,7 +96,7 @@ struct care_connection {
 
 	int instate;
 	int headsize;
-	struct care_buf inbuf;
+	struct carehttp_buf inbuf;
 
 	// output state and buffers (we have a circular array of buffers)
 	// usually the woutidx and woutidx buffers are used for writing headers and data respectivly.
@@ -105,17 +105,17 @@ struct care_connection {
 	int routidx;  // the sending buffer index
 	int roffset;  // the offset inside that buffer
 	int woutidx;  // the user facing output buffer index
-	struct care_buf outbufs[OUTBUFS];
+	struct carehttp_buf outbufs[OUTBUFS];
 };
 
 // a 64k tmp buffer for the recv command (data is then copied to indivdual connection buffers for parsing)
 static char tmpbuf[1<<16];
 // our single linked list of connections
-static struct care_connection *connections=0;
+static struct carehttp_connection *connections=0;
 
 // a utility function to reserve space in our buffers
 // returns -1 if we're out of memory
-static int care_buf_reserve(struct care_buf *line,int sz) {
+static int carehttp_buf_reserve(struct carehttp_buf *line,int sz) {
 	if (line->cap<sz) {
 		void *old=line->data;
 		int newsize=sz+200; // 200 is a random addition in case we get a small trailing read afterwards
@@ -133,8 +133,8 @@ static int care_buf_reserve(struct care_buf *line,int sz) {
 }
 
 // poll listening on the specified port and for connections on port-associated sockets
-void* care_poll(int port) {
-	struct care_connection **pcon=&connections; // keep a pointer to the previous link to a connection so we can update
+void* carehttp_poll(int port) {
+	struct carehttp_connection **pcon=&connections; // keep a pointer to the previous link to a connection so we can update
 
 	int found_at_port=0;    // is the requested port opened?
 	int first_connection=1; // is this the first connection we will open?
@@ -144,12 +144,12 @@ void* care_poll(int port) {
 
 	// process all active connections and listeners
 	while(*pcon) {
-		struct care_connection *cur=*pcon;
+		struct carehttp_connection *cur=*pcon;
 
 		// parentless connections are listeners
 		if (!cur->parent) {
 			int sock=-1;
-			struct care_connection *newconn;
+			struct carehttp_connection *newconn;
 			struct sockaddr_in sa;
 #ifdef WIN32
 			int sasize=sizeof(sa);
@@ -174,7 +174,7 @@ void* care_poll(int port) {
 			if (sock!=-1) {
 				work=1;
 				// a new socket was opened, allocate an associated connection
-				newconn=(struct care_connection*)calloc(1,sizeof(struct care_connection));
+				newconn=(struct carehttp_connection*)calloc(1,sizeof(struct carehttp_connection));
 #ifdef VERBOSE
 				fprintf(stderr,"Got a new connection %p:%d\n",newconn,sock);
 #endif
@@ -184,7 +184,7 @@ void* care_poll(int port) {
 				} else {
 					newconn->parent=cur;  // set the parent port
 					newconn->handle=sock; // set the socket
-					care_socket_set_nonblocking(sock); // and make it non-blocking
+					carehttp_socket_set_nonblocking(sock); // and make it non-blocking
 					newconn->next=*pcon;
 					*pcon=newconn;
 				}
@@ -231,7 +231,7 @@ void* care_poll(int port) {
 				while(cur->routidx!=cur->woutidx) {
 					int wr;
 					// take the first buffer
-					struct care_buf *buf=cur->outbufs+cur->routidx;
+					struct carehttp_buf *buf=cur->outbufs+cur->routidx;
 					
 					// is this buffer empty or did we finish sending?
 					if (cur->roffset>=buf->length) {
@@ -249,7 +249,7 @@ void* care_poll(int port) {
 					wr=send(cur->handle,buf->data+cur->roffset,buf->length-cur->roffset,0);
 					if (wr<0) {
 						// blocking or some kind of error
-						if (!care_socket_wasblock(cur->handle))
+						if (!carehttp_socket_wasblock(cur->handle))
 							goto conerr; // not blocking so an real error
 					} else {
 						work|=wr>0;
@@ -267,10 +267,10 @@ void* care_poll(int port) {
 				// read in some data
 				rc=recv(cur->handle,tmpbuf,sizeof(tmpbuf),0);
 				if (rc<0) {
-					if (!care_socket_wasblock(cur->handle))
+					if (!carehttp_socket_wasblock(cur->handle))
 						goto conerr; // A real error so we need to close and clean up
 				} else if (rc>0) {
-					if (care_buf_reserve(&cur->inbuf,cur->inbuf.length+rc+1)) {
+					if (carehttp_buf_reserve(&cur->inbuf,cur->inbuf.length+rc+1)) {
 						// error allocating memory, clean up the connection
 						goto conerr;
 					}
@@ -318,7 +318,7 @@ void* care_poll(int port) {
 	// no connection listening at the port was found so proceed to create a connection for this purpose
 	if (!found_at_port) {
 		// this below is assumed to succeed since it is to be run upon startup.
-		struct care_connection *nc=*pcon=(struct care_connection*)malloc(sizeof(struct care_connection));
+		struct carehttp_connection *nc=*pcon=(struct carehttp_connection*)malloc(sizeof(struct carehttp_connection));
 		if (!nc) {
 			fprintf(stderr,"Error, could not allocate memory for an listening socked\n");
 			exit(-1);
@@ -360,7 +360,7 @@ void* care_poll(int port) {
 				nc->handle=-1;
 				break;
 			}
-			care_socket_set_nonblocking(nc->handle);
+			carehttp_socket_set_nonblocking(nc->handle);
 			work=1;
 		} while(0);
 	}
@@ -376,10 +376,13 @@ void* care_poll(int port) {
 	return outval;
 }
 
-int care_responsecode(void *conn,int code) {
-	struct care_connection *cur=conn;
-	struct care_buf *buf=cur->outbufs+(cur->woutidx);
+int carehttp_responsecode(void *conn,int code) {
+	struct carehttp_connection *cur=conn;
+	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx);
 	const char *err="OK";
+
+	if (cur->instate<0)
+		return -1;
 
 	if (buf->length)
 		return 1; // don't update an already set response code
@@ -390,24 +393,27 @@ int care_responsecode(void *conn,int code) {
 	default:   err="Err"; break;
 	}
 
-	if (care_buf_reserve(buf,buf->length+20+strlen(err))) { // approximate reserve
+	if (carehttp_buf_reserve(buf,buf->length+20+strlen(err))) { // approximate reserve
 		cur->instate=-1; // out of memory, shut down this connection.
 		return -1;
 	}
 	buf->length+=sprintf(buf->data+buf->length,"HTTP/1.1 %3d %s\r\n",code,err);
 	return 0;
 }
-int care_header(void *conn,const char *head,const char *data) {
-	struct care_connection *cur=conn;
-	struct care_buf *buf=cur->outbufs+(cur->woutidx);
+int carehttp_header(void *conn,const char *head,const char *data) {
+	struct carehttp_connection *cur=conn;
+	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx);
+
+	if (cur->instate<0)
+		return -1;
 
 	// make a default 200 response incase we haven't already
 	if (!buf->length) {
-		if (care_responsecode(conn,200)<0)
+		if (carehttp_responsecode(conn,200)<0)
 			return -1;
 	}
 	// reserve memory for response code
-	if (care_buf_reserve(buf,buf->length+strlen(head)+strlen(data)+5)) {
+	if (carehttp_buf_reserve(buf,buf->length+strlen(head)+strlen(data)+5)) {
 		cur->instate=-1;
 		return -1;
 	}
@@ -415,8 +421,8 @@ int care_header(void *conn,const char *head,const char *data) {
 
 	return 0;
 }
-int care_match(void *conn,const char *fmt,...) {
-	struct care_connection *cur=conn;
+int carehttp_match(void *conn,const char *fmt,...) {
+	struct carehttp_connection *cur=conn;
 	int eor=0;  // end of request
 	int i=0; // headerline index
 	int sz=cur->headsize;
@@ -508,7 +514,7 @@ int care_match(void *conn,const char *fmt,...) {
 				mt=(*fmt++)&0x7f; // negative codes might be reserved for some other purpose
 				if (mt=='s') {
 					if (msz<1) {
-						fprintf(stderr,"SECURITY ERROR, %%s given without a size to care_match\n");
+						fprintf(stderr,"SECURITY ERROR, %%s given without a size to carehttp_match\n");
 						exit(-1);
 					}
 					msz--;
@@ -540,9 +546,9 @@ int care_match(void *conn,const char *fmt,...) {
 	return eor && !*fmt;
 }
 
-int care_printf(void *conn,const char *fmt,...) {
-	struct care_connection *cur=conn;
-	struct care_buf *buf=cur->outbufs+(cur->woutidx+1);
+int carehttp_printf(void *conn,const char *fmt,...) {
+	struct carehttp_connection *cur=conn;
+	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx+1);
 	int len;
 	va_list args;
 
@@ -554,7 +560,7 @@ int care_printf(void *conn,const char *fmt,...) {
 	len=1+vsnprintf(NULL,0,fmt,args);
 	va_end(args);
 
-	if (care_buf_reserve(buf,buf->length+len+1)) {
+	if (carehttp_buf_reserve(buf,buf->length+len+1)) {
 		cur->instate=-1;
 		return -1; // could not print
 	}
@@ -567,15 +573,15 @@ int care_printf(void *conn,const char *fmt,...) {
 	return len;
 }
 
-int care_write(void * conn,const char *inbuf,int count) {
-	struct care_connection *cur=conn;
-	struct care_buf *buf=cur->outbufs+(cur->woutidx+1);
+int carehttp_write(void * conn,const char *inbuf,int count) {
+	struct carehttp_connection *cur=conn;
+	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx+1);
 
 	if (cur->instate<0)
 		return -1;
 
 	// reserve space for the write
-	if (care_buf_reserve(buf,buf->length+count+1)<0) {
+	if (carehttp_buf_reserve(buf,buf->length+count+1)<0) {
 		cur->instate=-1;
 		return -1;
 	}
@@ -586,8 +592,8 @@ int care_write(void * conn,const char *inbuf,int count) {
 	return count;
 }
 
-void care_finish(void *conn) {
-	struct care_connection *cur=conn;
+void carehttp_finish(void *conn) {
+	struct carehttp_connection *cur=conn;
 	char tmp[40];
 
 	// this call will force the connection to be non-visible to a user so that it can be deallocated.
@@ -600,13 +606,16 @@ void care_finish(void *conn) {
 	// setup the content length automatically
 	{
 		sprintf(tmp,"%d",cur->outbufs[cur->woutidx+1].length);
-		if (care_header(conn,"Content-Length",tmp);
+		if (carehttp_header(conn,"Content-Length",tmp)<0) {
+			cur->instate=-1;
+			return;
+		}
 	}
 
 	// terminate headers with a newline
 	{
-		struct care_buf *buf=cur->outbufs+cur->woutidx;
-		if (care_buf_reserve(buf,buf->length+3)<0) {
+		struct carehttp_buf *buf=cur->outbufs+cur->woutidx;
+		if (carehttp_buf_reserve(buf,buf->length+3)<0) {
 			cur->instate=-1; // flag error!
 			return;
 		}
