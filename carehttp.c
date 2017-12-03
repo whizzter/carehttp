@@ -4,22 +4,30 @@
 //#define VERBOSE
 #define VERBOSELEVEL 2
 
-// Some defines to detect win32 compilation
-#ifdef _MSC_VER
-#define WIN32
-#endif
-#ifdef _WIN32
-#define WIN32
-#endif
-#ifdef __MINGW32__
-#define WIN32
+// Some defines to detect win32 compilation if it isn't specified already!
+#ifndef WIN32
+ #ifdef _MSC_VER
+  #define WIN32
+ #endif
+
+ #ifdef _WIN32
+  #define WIN32
+ #endif
+ #ifdef __MINGW32__
+  #define WIN32
+ #endif
 #endif
 
 // now for some includes and globals
 #ifdef WIN32
 #include <windows.h>
 #include <winsock.h>
-#pragma comment(lib,"wsock32.lib")
+
+#ifdef _MSC_VER
+ // this pragma is visual c++ specific
+ #pragma comment(lib,"wsock32.lib")
+#endif
+
 static int wsIsInit=0;
 #else
 #include <unistd.h>
