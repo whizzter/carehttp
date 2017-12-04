@@ -408,7 +408,7 @@ int carehttp_responsecode(void *conn,int code) {
 	buf->length+=sprintf(buf->data+buf->length,"HTTP/1.1 %3d %s\r\n",code,err);
 	return 0;
 }
-int carehttp_header(void *conn,const char *head,const char *data) {
+int carehttp_set_header(void *conn,const char *head,const char *data) {
 	struct carehttp_connection *cur=conn;
 	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx);
 
@@ -614,7 +614,7 @@ void carehttp_finish(void *conn) {
 	// setup the content length automatically
 	{
 		sprintf(tmp,"%d",cur->outbufs[cur->woutidx+1].length);
-		if (carehttp_header(conn,"Content-Length",tmp)<0) {
+		if (carehttp_set_header(conn,"Content-Length",tmp)<0) {
 			cur->instate=-1;
 			return;
 		}

@@ -25,7 +25,7 @@ int carehttp_responsecode(void *conn,int code);
 // sets a response header, this will implicitly add an 200/OK response code
 // so trying to report an error after a header has been set with this is not possible.
 // a negative return value indicates that an error has occured
-int carehttp_header(void *conn,const char *head,const char *data);
+int carehttp_set_header(void *conn,const char *head,const char *data);
 
 // prints characters to an output
 // a negative return indicates that an error has occured
