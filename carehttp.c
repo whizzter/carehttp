@@ -554,6 +554,78 @@ int carehttp_match(void *conn,const char *fmt,...) {
 	return eor && !*fmt;
 }
 
+static int hexdigit(char c) {
+	if ('0'<=c && c<='9') {
+		return c-'0';
+	} else if ('a'<=c && c<='f') {
+		return c-'a'+10;
+	} else if ('A'<=c && c<='F') {
+		return c-'A'+10;
+	} else {
+		return -1;
+	}
+}
+
+// request parameters can be fetched with this function
+int carehttp_get_param(void *conn,char *out,int outsize,const char *name) {
+	struct carehttp_connection *cur=conn;
+	char *rd=cur->inbuf.data;
+	int nlen=strlen(name);
+	int ol=0; // outlen
+
+	if (cur->instate!=1 || outsize<1 || !rd)
+		return -1;
+
+	// find query string part by searching for ?
+	while(*rd != '?') {
+		if (!*rd)
+			return -1; // end of string.. no params
+		rd++;
+	}
+	rd++; // skip ?
+
+	while(1) {
+		if (!memcmp(rd,name,nlen) && rd[nlen]=='=') {
+			rd+=nlen+1;
+			break; // we found the argument, break now!
+		}
+		// otherwise scan for the next argument
+		while(*rd!='&') {
+			if (!*rd || *rd==' ')
+				return -1; // end of query or end of string, regardless no match
+			rd++;
+		}
+		// skip & sign
+		rd++;
+	}
+
+	// we should have encountered an argument now, so let's decode it as far as possible
+	while(1) {
+		int hex1,hex2;
+		if (!*rd || *rd==' ' || *rd=='&')
+			break;
+		if (ol+1==outsize)
+			break;
+		if (*rd=='+') {
+			out[ol++]=' ';
+			rd++;
+			continue;
+		} else if (*rd=='%' && -1!=(hex1=hexdigit(rd[1])) && -1!=(hex2=hexdigit(rd[2])) ) {
+			out[ol++]=(hex1<<4)|hex2;
+			rd+=3;
+			continue;
+		} else {
+			out[ol++]=*rd++;
+			continue;
+		}
+	}
+
+	// null terminate the query param output
+	out[ol]=0;
+
+	return ol;
+}
+
 int carehttp_printf(void *conn,const char *fmt,...) {
 	struct carehttp_connection *cur=conn;
 	struct carehttp_buf *buf=cur->outbufs+(cur->woutidx+1);

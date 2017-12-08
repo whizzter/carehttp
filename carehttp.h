@@ -17,6 +17,11 @@ void* carehttp_poll(int port);
 //  %* is used to match anything until the next char matches (if this occurs at the end of the match then the rest of the string is matched)
 int carehttp_match(void *conn,const char *fmt,...);
 
+// request parameters can be fetched with this function
+// if an error occured or not string was found then -1 is returned, 
+// otherwise the string size is returned
+int carehttp_get_param(void *conn,char *out,int outsize,const char *param_name);
+
 // sets the response code to send back to the client.
 // can only be called once per request and MUST be sent before any headers.
 // a negative response indicates that an error has occured

@@ -8,6 +8,17 @@ A minimal but useful library for writing C services with C idioms and compact co
 See test.c for a simple but mostly complete usage sample
 and see care.h for API documentation.
 
+# Compiling
+Compiling under linux,bsd and osX with the built in compilers should not require anything extra.
+
+Compiling with visual studio on windows should also work without anything extra.
+
+Compiling with mingw for win32 however will require you to add the winsock library.
+```
+ gcc.exe -o care.exe test.c carehttp.c -lwsock32
+```
+If compiling with an IDE such as code::blocks then ad wsock32 into the linker options (this has the same effect as the line above)
+
 # Security
 Usually C idioms such as scanf and their ilk can be error prone so some
 effort has been done to shield programmers from errors in the design.
