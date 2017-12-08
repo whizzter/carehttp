@@ -30,13 +30,13 @@ int main(int argc,char **argv) {
 				carehttp_printf(req,"Blag matched %s\n",name);
 
 			} else if (carehttp_match(req,"/")) {
-				char extra[50];
+				char extravalue[50];
 				// this will match exactly one url
 				carehttp_printf(req,"This is the base URL\n");
 
 				// we also check for an extra parameter
-				if (0<=carehttp_get_param(req,extra,50,"extra")) {
-					carehttp_printf(req,"User supplied an extra parameter '%s'\n",extra);
+				if (0<=carehttp_get_param(req,extravalue,50,"extra")) {
+					carehttp_printf(req,"User supplied an extra parameter '%s'\n",extravalue);
 				}
 			} else {
 				// othewise report an 404 error
