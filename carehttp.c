@@ -103,8 +103,15 @@ struct carehttp_connection {
 	// * (todo) 2+ means that we are expecting post data either directly or via chunked encodings.
 
 	int instate;
-	int headsize;
 	struct carehttp_buf inbuf;
+	// the following struct is parsed and ONLY valid for instate 1 and after, the header will also have been chopped up into null terminated parts for easier/faster processing.
+	struct {
+		int headsize; // total size of headers
+		int uri_index; // index of the URI part of the header (the method is implicit)
+		int param_index; // index of URI parameter parts
+		int version_index; // version
+		int headers_index; // where to begin searching the headers.
+	}headinfo;
 
 	// output state and buffers (we have a circular array of buffers)
 	// usually the woutidx and woutidx buffers are used for writing headers and data respectivly.
@@ -136,6 +143,27 @@ static int carehttp_buf_reserve(struct carehttp_buf *line,int sz) {
 			return -1;
 		}
 		line->cap=newsize;
+	}
+	return 0;
+}
+
+static int rl_nonspace(int c){
+	if (c==0 || c=='\n' || c=='\r')
+		return -1;
+	if (c!=' ')
+		return 1;
+	return 0;
+}
+static int rl_space(int c) {
+	return 1^rl_nonspace(c); // only flip one bit, this gives us a negative for errors and flips the positive results.
+}
+
+static int str_skip_type(const char *buf,int *idx,int (*f)(int)) {
+	int r;
+	while(r=f(buf[*idx])) {
+		if (r<0)
+			return -1;
+		(*idx)++;
 	}
 	return 0;
 }
@@ -289,17 +317,51 @@ void* carehttp_poll(int port) {
 				}
 				// do header parsing assuming we are in that input state and have space to produce new output!
 				if (cur->instate==0 && ((cur->woutidx+2)%OUTBUFS)!=cur->routidx && ((cur->woutidx+3)%OUTBUFS)!=cur->routidx) {
-					for (;cur->headsize<cur->inbuf.length-3;cur->headsize++) {
-						if (memcmp(cur->inbuf.data+cur->headsize,"\r\n\r\n",4))
+					for (;cur->headinfo.headsize<cur->inbuf.length-3;cur->headinfo.headsize++) {
+						if (memcmp(cur->inbuf.data+cur->headinfo.headsize,"\r\n\r\n",4))
 							continue;
 						cur->instate=1;
-						cur->headsize+=4;
+						cur->headinfo.headsize+=4;
 						break;
 					}
 					// did we find the end of headers and enter state 1 ?
 					if (cur->instate==1) {
+						// if so do some calculations to separate and identify the different parts of the request line.
+						int pos=0;
+						char c;
+						// Null-char checks are ok since the buffers will be null terminated after receiving the data.
+						
+						// go through the method characters
+						if (0>str_skip_type(cur->inbuf.data,&pos,rl_nonspace))
+							goto conerr;
+						// skip the spaces afterwads
+						if (0>str_skip_type(cur->inbuf.data,&pos,rl_space))
+							goto conerr;
+						
+						// now we know where the URI part of the request is.
+						cur->headinfo.uri_index=pos;
+						while(' '!=(c=cur->inbuf.data[pos])) {
+							if (!c || c=='\n' || c=='\r')
+								goto conerr; // malformed request line (we won't accept HTTP/0.9 requests)
+							// if we have not yet found the param index then record it.
+							if (c=='?' && !cur->headinfo.param_index) {
+								cur->headinfo.param_index=pos+1;
+							}
+							pos++;
+						}
+						// skip spaces after request line
+						if (0>str_skip_type(cur->inbuf.data,&pos,rl_space))
+							goto conerr;
+						
+						// now that we've reached the version record it.
+						cur->headinfo.version_index=pos;
+						// skip the HTTP version
+						str_skip_type(cur->inbuf.data,&pos,rl_nonspace);
+						// and record the start of header lines.
+						cur->headinfo.headers_index=pos;
+						
 						// replace cr/lf chars with 0's so we can separate the request line and headers
-						for (i=0;i<cur->headsize;i++) {
+						for (i=pos;i<cur->headinfo.headsize;i++) {
 							if (cur->inbuf.data[i]=='\r' || cur->inbuf.data[i]=='\n') {
 								cur->inbuf.data[i]=0;
 							}
@@ -430,128 +492,98 @@ int carehttp_set_header(void *conn,const char *head,const char *data) {
 	return 0;
 }
 int carehttp_match(void *conn,const char *fmt,...) {
+	va_list args;
 	struct carehttp_connection *cur=conn;
-	int eor=0;  // end of request
-	int i=0; // headerline index
-	int sz=cur->headsize;
-	int mt=-1; // matchtype: -1 indicates the default
-	int msz=0; // matchsize
-
-	char *sdp=0; // match string dest ptr
-	int  *ddp=0; // match decimal dest ptr
-	int   num=0; // number parsing number
-	int  sign=0;
-
+	// request data uri ptr
 	char *rd=cur->inbuf.data;
 
-	va_list args;
-
+	// only match in the correct state
 	if (cur->instate!=1)
 		return 0;
 
+	// go directly to the uri_index since it has been parsed out by the poll routine.
+	rd+=cur->headinfo.uri_index;
+
+	// begin va args
 	va_start(args,fmt);
 
-	// skip past the method
-	while(rd[i] && !isspace(rd[i]))
-		i++;
-	// skip past the spaces afterwards
-	while(rd[i] && isspace(rd[i]))
-		i++;
+	// go through the entire fmt string to match it with the request.
+	while(*fmt) {
+		int mt=*fmt++;
+		if (mt=='%') {
+			int msz=0; // prepare parsing a size of the match token
+			int end;   // a terminator character
+			// parse the request size from the format string
+			while(isdigit(*fmt)) {
+				msz=msz*10 + (*fmt++ - '0');
+			}
+			mt=(*fmt++)&0x7f; // negative codes might be reserved for some other purpose
+			end=*fmt;         // post the format specifier we have a terminator character that is expected just after
+			if (end=='%')
+				end=fmt[1]=='%'?'%':0; // if the terminator is another fmt specifier then it must be the % literal
+			if (mt=='s') {
+				// we found a string format specifier
+				char *dest=va_arg(args,char*); // get the dest ptr
+				if (msz<1) {
+					// do not allow nonexistant or too small format specifiers
+					fprintf(stderr,"SECURITY ERROR, %%s given without a size to carehttp_match\n");
+					exit(-1);
+				}
+				msz--; // decrease size by one since we might have a null-termination
 
-	// now scan the request string
-	while(rd[i]) {
-		char c=rd[i];
-		eor=!c || c=='?' || c==' ';
-#ifdef VERBOSE
-#if VERBOSELEVEL > 2
-		fprintf(stderr,"Parsing: %c at %d with state mtint:%d mtchar:%c rest:%d num:%d\n",c,i,mt,mt,msz,num);
-#endif
-#endif
-		if (eor)
-			break;
-		if (mt=='s') {
-			if (!msz || *fmt==c) {
-				*sdp=0;
-				mt=-1;
-				continue; // no more space, try continue scanning afterwards
-			}
-			*sdp++=c;
-			*sdp=0;  // add null term for each char so we can jump away when we're out of bounds or encounter our endchar
-			i++;
-			msz--;
-			continue;
-		} else if (mt=='d') {
-			if (!sign) {
-				if (c=='-') {
-					sign=-1;
-					i++;
-					continue;
-				} else if (c=='+') {
-					sign=1;
-					i++;
-					continue;
-				}
-			}
-			if (!sign)
-				sign=1;
-			if ('0'<=c && c<='9') {
-				num=num*10 + (c-'0');
-				*ddp=num*sign;
-				i++;
-				continue;
-			} else {
-				mt=-1;
-				continue;
-			}
-		} else if (mt=='*') {
-			if (*fmt==c) {
-				mt=-1;
-			} else {
-				i++; // just gobble up the rest!
-			}
-			continue;
-		} else {
-			if (*fmt=='%') {
-				fmt++;
-				// parse the request size from the format string
-				msz=0;
-				while(isdigit(*fmt)) {
-					msz=msz*10 + (*fmt-'0');
-					fmt++;
-				}
-				mt=(*fmt++)&0x7f; // negative codes might be reserved for some other purpose
-				if (mt=='s') {
-					if (msz<1) {
-						fprintf(stderr,"SECURITY ERROR, %%s given without a size to carehttp_match\n");
-						exit(-1);
-					}
+				// and eat in the string until we find the follow character or run out of space
+				while(msz && *rd!=end) {
+					// break on special conditions!
+					if (!*rd || *rd==' ' || *rd=='?')
+						break;
+					*dest++=*rd++; // copy out the matching chars
 					msz--;
-					sdp=va_arg(args,char*); // get the dest ptr
-					continue;
-				} else if (mt=='d') {
-					num=sign=0; // reset parsing data
-					ddp=va_arg(args,int*); // get the dest ptr
-					continue;
-				} else if (mt=='*') {
-					continue;
 				}
-			} else {
-				mt=*fmt++;
-				if (!mt)
-					break; // reached end of fmt string without ending the request
+				*dest=0; // add null terminator
+				continue;
+			} else if (mt=='d') {
+				int num=0,sign=1; // parsing data.
+				int *dest=va_arg(args,int*); // get the dest ptr
+				char *nsta;
+				// read out sign specifiers
+				if (*rd=='-') {
+					sign=-1;
+					rd++;
+				} else if (*rd=='+') {
+					rd++;
+				}
+				nsta=rd;
+				// and now parse out the number
+				while('0'<=*rd && *rd<='9') {
+					num=num*10 + (*rd - '0');
+					*dest=sign*num;
+					rd++;
+				}
+				// if we found no digits at all the match will fail!
+				if (nsta==rd)
+					goto fail;
+				continue;
+			} else if (mt=='*') {
+				// wildcard match gobbling up characters
+				while(*rd!=end) {
+					if (!*rd || *rd==' ' || *rd=='?')
+						break;
+					rd++;
+				}
+				continue;
 			}
-			if (mt!=c)
-				break;
-			i++;
-			mt=-1;
 		}
+		// no special format string (or we fell through due to a non-special fmt string that is treated as an literal.
+		if (mt!=*rd++)
+			goto fail;
 	}
-	// if we had a any-match termination afterwards then allow the match
-	if (!strcmp(fmt,"%*")) {
-		fmt+=2;
-	}
+
 	va_end(args);
-	return eor && !*fmt;
+	return !*rd || *rd=='?' || *rd==' ';
+
+	fail:
+	va_end(args);
+	return 0;
 }
 
 static int hexdigit(char c) {
@@ -572,30 +604,42 @@ int carehttp_get_param(void *conn,char *out,int outsize,const char *name) {
 	char *rd=cur->inbuf.data;
 	int nlen=strlen(name);
 	int ol=0; // outlen
+	const char *ok=name; // begin matching the name
 
-	if (cur->instate!=1 || outsize<1 || !rd)
+	if (cur->instate!=1 || outsize<1 || !rd || !cur->headinfo.param_index)
 		return -1;
 
-	// find query string part by searching for ?
-	while(*rd != '?') {
-		if (!*rd)
-			return -1; // end of string.. no params
-		rd++;
-	}
-	rd++; // skip ?
+	// skip to parameter part
+	rd+=cur->headinfo.param_index;
 
+	// find argument
 	while(1) {
-		if (!memcmp(rd,name,nlen) && rd[nlen]=='=') {
-			rd+=nlen+1;
-			break; // we found the argument, break now!
+		if (ok) { // still matching the name?
+			if (!*ok) { // end of the name?
+				if (!*rd || *rd==' ' || *rd=='&') {
+					// param name present but terminated without data, succeed with a zero sized string.
+					out[0]=0;
+					return 0;
+				} else if (*rd=='=') {
+					// param name present and equal sign follows, so let's begin decoding the following data.
+					rd++;
+					break;
+				} else {
+					ok=0; // otherwise we've failed.
+				}
+			} else {
+				if (*rd==*ok) {
+					ok++;
+					rd++;
+					continue;
+				}
+			}
 		}
-		// otherwise scan for the next argument
-		while(*rd!='&') {
-			if (!*rd || *rd==' ')
-				return -1; // end of query or end of string, regardless no match
-			rd++;
-		}
-		// skip & sign
+		// not matching the name for whatever reason we failed.
+		if (!*rd || *rd==' ')
+			return -1; // end of query or end of string, regardless no match
+		if (*rd=='&')
+			ok=name; // found another arg, try scanning for a match again.
 		rd++;
 	}
 
@@ -707,9 +751,9 @@ void carehttp_finish(void *conn) {
 	cur->woutidx=(cur->woutidx+2)%OUTBUFS;
 
 	// on the request side dump the request header data to process the next request on this socket.
-	memmove(cur->inbuf.data,cur->inbuf.data+cur->headsize,cur->inbuf.length-cur->headsize);
-	cur->inbuf.length-=cur->headsize;
+	memmove(cur->inbuf.data,cur->inbuf.data+cur->headinfo.headsize,cur->inbuf.length-cur->headinfo.headsize);
+	cur->inbuf.length-=cur->headinfo.headsize;
 	cur->instate=0; // reset the parsing state once we've finished
-	cur->headsize=0;
+	memset(&cur->headinfo,0,sizeof(cur->headinfo));
 }
 

@@ -17,7 +17,7 @@ Compiling with mingw for win32 however will require you to add the winsock libra
 ```
  gcc.exe -o care.exe test.c carehttp.c -lwsock32
 ```
-If compiling with an IDE such as code::blocks then ad wsock32 into the linker options (this has the same effect as the line above)
+If compiling with an IDE such as code::blocks then add wsock32 into the linker options (this has the same effect as the line above)
 
 # Security
 Usually C idioms such as scanf and their ilk can be error prone so some
