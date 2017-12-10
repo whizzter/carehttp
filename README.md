@@ -24,14 +24,19 @@ If no request was found poll will return a void pointer, otherwise it will retur
 connection that can be used by the other API functions, the most important one being match:
 
 ```
-	if (carehttp_match(req,"/"))
+	if (carehttp_match(req,"/")) {
+		// The "/" url matches, produce an appropriate response.
+	}
 ```
 This will match requests to the "/" url (for example http://localhost:8080/ ),
 while fixed URL's are useful you usually want to be able to match patterns of URL's.
 
 To keep with C idioms match accepts strict C style format specifiers.
 ```
-	if (carehttp_match(req,"/blog/%200s",post))
+	if (carehttp_match(req,"/blog/%200s",post)) {
+		// Not only did we match an url beginning with "/blog/
+		// we can also find out anything past that prefix in the post string array
+	}
 ```
 
 This will match "/blog/" urls and fill in the char array at post with up to 199 characters
@@ -39,14 +44,22 @@ This will match "/blog/" urls and fill in the char array at post with up to 199 
 for null terminators).
 
 *carehttp_match* also supports %d matching to read in integers (including negative ones) and
-a %* match to read in an arbitrary amount of characters that are ignored.
+a %* match to ignore in an arbitrary amount of characters.
 
-Both %s and %\* will use the character following the parameter as a terminator characther.
+Both %s and %\* will use the character following the parameter as a terminator characther for
+that match, so in the following example.
+```
+	if (carehttp_match(req,"/books/%30s/title",name)) {
+		// process the match
+	}
+```
+The name of the book will never contain a '/' character since that character indicates that the
+string is terminated at that point.
 
 Applications using html form parameters can use the *carehttp_get_param* function to get
-those parameters.
+those parameters (This function returns decoded parameters removing %XX and + sequences).
 
-Once the application has determined the input the output can be produced, the easiest way is to
+Once the application has determined the input then the output can be produced, the easiest way is to
 use the *carehttp_printf* function
 
 ```
