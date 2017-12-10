@@ -43,7 +43,7 @@ This will match "/blog/" urls and fill in the char array at post with up to 199 
 (for defensive purposes the 200 above is counted to be a buffer size and space is thus reserved
 for null terminators).
 
-*carehttp_match* also supports %d matching to read in integers (including negative ones) and
+**carehttp_match** also supports %d matching to read in integers (including negative ones) and
 a %* match to ignore in an arbitrary amount of characters.
 
 Both %s and %\* will use the character following the parameter as a terminator characther for
@@ -56,7 +56,7 @@ that match, so in the following example.
 The name of the book will never contain a '/' character since that character indicates that the
 string is terminated at that point.
 
-Applications using html form parameters can use the *carehttp_get_param* function to get
+Applications using html form parameters can use the **carehttp_get_param** function to get
 those parameters (This function returns decoded parameters removing %XX and + sequences).
 
 Once the application has determined the input then the output can be produced, the easiest way is to
@@ -66,8 +66,8 @@ use the *carehttp_printf* function
 	carehttp_printf(req,"Hello world %d",20);
 ```
 
-Here regular printf format specifiers can be used, also available is *carehttp_set_header* and
-*carehttp_write* functions that are useful for binary data transmission.
+Here regular printf format specifiers can be used, also available is **carehttp_set_header** and
+**carehttp_write** functions that are useful for binary data transmission.
 
 When data output is done the request is finished a call is made to push out the data to
 the client and invalidate the request handle (using the request handle after this is undefined
